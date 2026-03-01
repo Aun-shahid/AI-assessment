@@ -1,0 +1,20 @@
+# railway.toml for the Backend service
+
+# This section defines how Railway should build your application.
+[build]
+# We specify "dockerfile" to tell Railway to use the Dockerfile.
+builder = "dockerfile"
+# The root directory for the build context is the `Backend` directory.
+dockerContext = "Backend"
+# The path to the Dockerfile, relative to the project root.
+dockerfilePath = "Backend/Dockerfile"
+
+# This section defines how Railway should deploy your application.
+[deploy]
+
+# The path for the health check.
+healthcheckPath = "/health"
+# The restart policy for the service.
+restartPolicyType = "ON_FAILURE"
+# The maximum number of times to restart the service if it fails.
+restartPolicyMaxRetries = 10

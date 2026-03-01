@@ -1,0 +1,19 @@
+# Ignore virtual environments
+venv/
+.venv/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore IDE and editor files
+.vscode/
+.idea/
+
+# Ignore local development files
+.env
+*.log
+SENDGRID_TROUBLESHOOTING.md
+railway.toml
