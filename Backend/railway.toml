@@ -4,8 +4,8 @@
 [build]
 # We specify "dockerfile" to tell Railway to use the Dockerfile.
 builder = "dockerfile"
-# The root directory for the build context is the repository root to access both Backend and docs.
-dockerContext = "."
+# The root directory for the build context is the `Backend` directory.
+dockerContext = "Backend"
 # The path to the Dockerfile, relative to the project root.
 dockerfilePath = "Backend/Dockerfile"
 
