@@ -1,5 +1,11 @@
-import { useState, useRef, useEffect } from "react";
-import { sendMessage } from "../services/chatbot.service";
+import { useState, useRef, useEffect, useCallback } from "react";
+import {
+  sendMessage,
+  listSessions,
+  getSession,
+  createSession,
+  deleteSession,
+} from "../services/chatbot.service";
 import ReactMarkdown from "react-markdown";
 
 // MUI
@@ -16,7 +22,6 @@ import TextField from "@mui/material/TextField";
 import Avatar from "@mui/material/Avatar";
 import Paper from "@mui/material/Paper";
 import Chip from "@mui/material/Chip";
-import LinearProgress from "@mui/material/LinearProgress";
 import List from "@mui/material/List";
 import ListItem from "@mui/material/ListItem";
 import ListItemIcon from "@mui/material/ListItemIcon";
@@ -38,6 +43,8 @@ import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked";
 import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import MenuIcon from "@mui/icons-material/Menu";
 import AssignmentTurnedInIcon from "@mui/icons-material/AssignmentTurnedIn";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 
 /* ── Theme ── */
 const theme = createTheme({
@@ -61,7 +68,7 @@ const theme = createTheme({
 
 const DRAWER_WIDTH = 280;
 
-/* ── state labels for the progress tracker ── */
+/* ── state labels for the current-step indicator ── */
 const STATE_LABELS = {
   greeting: "Getting started",
   topic_identification: "Identifying topics",
@@ -73,25 +80,45 @@ const STATE_LABELS = {
   complete: "Assessment ready",
 };
 
-const STATE_ORDER = Object.keys(STATE_LABELS);
+const DEFAULT_GREETING = {
+  role: "assistant",
+  content:
+    "Hello! I'm **EduAssess AI** — your intelligent assessment assistant.\n\nTell me a **topic or subject area** and I'll help you create a tailored student assessment aligned to the curriculum.",
+};
 
 export default function ChatInterface() {
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      content:
-        "Hello! I'm **EduAssess AI** — your intelligent assessment assistant.\n\nTell me a **topic or subject area** and I'll help you create a tailored student assessment aligned to the curriculum.",
-    },
-  ]);
+  const [messages, setMessages] = useState([DEFAULT_GREETING]);
   const [input, setInput] = useState("");
   const [sessionId, setSessionId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [agentState, setAgentState] = useState("greeting");
   const [structuredData, setStructuredData] = useState(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Session list state
+  const [sessions, setSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+
+  // ── Fetch sessions list ──
+  const fetchSessions = useCallback(async () => {
+    try {
+      setSessionsLoading(true);
+      const res = await listSessions(0, 50);
+      setSessions(res.sessions);
+    } catch (err) {
+      console.error("Failed to load sessions:", err);
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSessions();
+  }, [fetchSessions]);
 
   /* auto-scroll on new messages */
   useEffect(() => {
@@ -118,6 +145,8 @@ export default function ChatInterface() {
       setAgentState(res.state);
       if (res.data) setStructuredData(res.data);
       setMessages((prev) => [...prev, { role: "assistant", content: res.response }]);
+      // Refresh session list so the sidebar stays current
+      fetchSessions();
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -136,23 +165,75 @@ export default function ChatInterface() {
   };
 
   /* ── new session ── */
-  const handleNewSession = () => {
-    setMessages([
-      {
-        role: "assistant",
-        content:
-          "Hello! I'm **EduAssess AI** — your intelligent assessment assistant.\n\nTell me a **topic or subject area** and I'll help you create a tailored student assessment aligned to the curriculum.",
-      },
-    ]);
+  const handleNewSession = async () => {
+    setMessages([DEFAULT_GREETING]);
     setSessionId(null);
     setAgentState("greeting");
     setStructuredData(null);
     setInput("");
+    if (isMobile) setMobileOpen(false);
+
+    try {
+      const res = await createSession();
+      setSessionId(res.session_id);
+      fetchSessions();
+    } catch (err) {
+      console.error("Failed to create session:", err);
+    }
   };
 
-  /* ── progress ── */
-  const stateIndex = STATE_ORDER.indexOf(agentState);
-  const progress = ((stateIndex + 1) / STATE_ORDER.length) * 100;
+  /* ── load an existing session ── */
+  const handleLoadSession = async (sid) => {
+    if (sid === sessionId) return;
+    try {
+      setLoading(true);
+      const detail = await getSession(sid);
+
+      // Restore messages — if empty, show default greeting
+      if (detail.messages && detail.messages.length > 0) {
+        setMessages(
+          detail.messages.map((m) => ({ role: m.role, content: m.content }))
+        );
+      } else {
+        setMessages([DEFAULT_GREETING]);
+      }
+
+      setSessionId(detail.session_id);
+      setAgentState(detail.state);
+      setStructuredData(
+        detail.generated_assessment
+          ? { assessment: detail.generated_assessment }
+          : detail.selected_los?.length
+          ? { selected_los: detail.selected_los }
+          : null
+      );
+      setInput("");
+      if (isMobile) setMobileOpen(false);
+    } catch (err) {
+      console.error("Failed to load session:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /* ── delete a session ── */
+  const handleDeleteSession = async (sid, e) => {
+    e.stopPropagation(); // Prevent triggering the load handler
+    try {
+      await deleteSession(sid);
+      // If we deleted the active session, reset to a blank state
+      if (sid === sessionId) {
+        setMessages([DEFAULT_GREETING]);
+        setSessionId(null);
+        setAgentState("greeting");
+        setStructuredData(null);
+        setInput("");
+      }
+      fetchSessions();
+    } catch (err) {
+      console.error("Failed to delete session:", err);
+    }
+  };
 
   /* ── Sidebar content ── */
   const sidebarContent = (
@@ -185,50 +266,92 @@ export default function ChatInterface() {
 
       <Divider />
 
-      {/* Progress */}
-      <Box sx={{ flex: 1 }}>
-        <Typography variant="overline" color="text.secondary" fontWeight={600} sx={{ mb: 1, display: "block" }}>
-          Progress
+      {/* Session History */}
+      <Box sx={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        <Typography variant="overline" color="text.secondary" fontWeight={600} sx={{ mb: 0.5, display: "block" }}>
+          Sessions
         </Typography>
-        <LinearProgress
-          variant="determinate"
-          value={progress}
+
+        {/* Session list — scrollable */}
+        <Box
           sx={{
-            height: 6,
-            borderRadius: 3,
-            mb: 2,
-            bgcolor: "grey.200",
-            "& .MuiLinearProgress-bar": {
-              background: "linear-gradient(90deg, #6366f1, #818cf8)",
-              borderRadius: 3,
-            },
+            flex: 1,
+            overflowY: "auto",
+            mb: 1,
+            "&::-webkit-scrollbar": { width: 4 },
+            "&::-webkit-scrollbar-thumb": { bgcolor: "grey.300", borderRadius: 2 },
           }}
-        />
-        <List dense disablePadding>
-          {STATE_ORDER.map((s, i) => {
-            const done = i <= stateIndex;
-            const active = s === agentState;
-            return (
-              <ListItem key={s} disableGutters sx={{ py: 0.3 }}>
-                <ListItemIcon sx={{ minWidth: 28 }}>
-                  {done ? (
-                    <CheckCircleIcon sx={{ fontSize: 16, color: active ? "primary.dark" : "primary.main" }} />
-                  ) : (
-                    <RadioButtonUncheckedIcon sx={{ fontSize: 16, color: "grey.400" }} />
-                  )}
-                </ListItemIcon>
-                <ListItemText
-                  primary={STATE_LABELS[s]}
-                  primaryTypographyProps={{
-                    fontSize: "0.8rem",
-                    fontWeight: active ? 700 : 400,
-                    color: done ? (active ? "primary.dark" : "primary.main") : "text.disabled",
+        >
+          {sessionsLoading && sessions.length === 0 ? (
+            <Typography variant="caption" color="text.disabled" sx={{ px: 1 }}>
+              Loading…
+            </Typography>
+          ) : sessions.length === 0 ? (
+            <Typography variant="caption" color="text.disabled" sx={{ px: 1 }}>
+              No sessions yet
+            </Typography>
+          ) : (
+            sessions.map((s) => {
+              const isActive = s.session_id === sessionId;
+              return (
+                <Paper
+                  key={s.session_id}
+                  elevation={0}
+                  onClick={() => handleLoadSession(s.session_id)}
+                  sx={{
+                    p: 1,
+                    mb: 0.5,
+                    cursor: "pointer",
+                    borderRadius: 2,
+                    border: 1,
+                    borderColor: isActive ? "primary.main" : "transparent",
+                    bgcolor: isActive ? "rgba(99,102,241,0.06)" : "transparent",
+                    "&:hover": {
+                      bgcolor: isActive ? "rgba(99,102,241,0.1)" : "grey.50",
+                    },
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    transition: "all 0.15s ease",
                   }}
-                />
-              </ListItem>
-            );
-          })}
-        </List>
+                >
+                  <ChatBubbleOutlineIcon
+                    sx={{ fontSize: 16, color: isActive ? "primary.main" : "text.disabled", flexShrink: 0 }}
+                  />
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography
+                      variant="body2"
+                      noWrap
+                      sx={{
+                        fontWeight: isActive ? 600 : 400,
+                        color: isActive ? "primary.dark" : "text.primary",
+                        fontSize: "0.8rem",
+                      }}
+                    >
+                      {s.last_message_preview || STATE_LABELS[s.state] || "New session"}
+                    </Typography>
+                    <Typography variant="caption" color="text.disabled" sx={{ fontSize: "0.65rem" }}>
+                      {new Date(s.updated_at).toLocaleDateString()}
+                    </Typography>
+                  </Box>
+                  <IconButton
+                    size="small"
+                    onClick={(e) => handleDeleteSession(s.session_id, e)}
+                    sx={{
+                      opacity: 0.4,
+                      "&:hover": { opacity: 1, color: "error.main" },
+                      p: 0.3,
+                    }}
+                  >
+                    <DeleteOutlineIcon sx={{ fontSize: 16 }} />
+                  </IconButton>
+                </Paper>
+              );
+            })
+          )}
+        </Box>
+
+        <Divider sx={{ mb: 1 }} />
       </Box>
 
       {/* Assessment ready card */}

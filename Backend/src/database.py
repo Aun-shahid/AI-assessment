@@ -20,6 +20,7 @@ subdomains_col = db["subdomains"]
 learning_outcomes_col = db["learning_outcomes"]
 textbook_chunks_col = db["textbook_chunks"]
 sessions_col = db["sessions"]
+rag_metrics_col = db["rag_metrics"]
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +60,11 @@ async def ensure_vector_search_index() -> None:
                         "path": "embedding",
                         "numDimensions": settings.EMBEDDING_DIMENSIONS,
                         "similarity": "cosine",
-                    }
+                    },
+                    {
+                        "type": "filter",
+                        "path": "associated_lo_codes",
+                    },
                 ]
             },
             name="vector_index",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 
 from fastapi import APIRouter, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage
@@ -19,6 +20,7 @@ from src.models.api import AnswerRequest, AnswerResponse
 from src.models.session import Message, Session, SessionState
 
 router = APIRouter(tags=["answer"])
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +83,13 @@ async def answer(req: AnswerRequest) -> AnswerResponse:
     else:
         session = Session()
 
+    logger.info(
+        "[answer] session=%s incoming state=%s message=%s",
+        session.session_id,
+        session.state,
+        req.message[:200],
+    )
+
     # 2. Append the incoming user message -------------------------------------
     session.messages.append(
         Message(role="user", content=req.message)
@@ -102,6 +111,11 @@ async def answer(req: AnswerRequest) -> AnswerResponse:
 
     # 4. Invoke the graph -----------------------------------------------------
     result = await graph.ainvoke(initial_state)
+    logger.info(
+        "[answer] session=%s graph_complete result_state=%s",
+        session.session_id,
+        result.get("session", {}).get("state", session.state),
+    )
 
     # 5. Extract the agent's reply --------------------------------------------
     agent_reply = ""
@@ -137,11 +151,19 @@ async def answer(req: AnswerRequest) -> AnswerResponse:
         {"$set": session.model_dump(mode="json")},
         upsert=True,
     )
+    logger.info(
+        "[answer] session=%s persisted state=%s messages=%s",
+        session.session_id,
+        session.state,
+        len(session.messages),
+    )
 
     # 8. Build structured data payload ----------------------------------------
     data: dict | None = None
     if session.state == SessionState.DOMAIN_REASONING:
         data = {"matched_los": session.matched_los}
+    elif session.state == SessionState.TOPIC_SELECTION:
+        data = {"selected_los": session.selected_los}
     elif session.state == SessionState.REVIEW_REFINEMENT:
         data = {
             "selected_los": session.selected_los,

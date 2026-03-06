@@ -11,6 +11,7 @@ from src.database import (
     textbook_chunks_col,
 )
 from src.services.embedding import embed_texts
+import pymongo
 
 # ---------------------------------------------------------------------------
 # Curriculum data (from the project specification)
@@ -430,7 +431,7 @@ async def seed_chunks() -> None:
     for i in range(0, len(to_embed), batch_size):
         batch = to_embed[i : i + batch_size]
         texts = [c.get("content", "") for c in batch]
-        vectors = await embed_texts(texts)
+        vectors = await embed_texts(texts, source="textbook_content")
 
         for chunk, vec in zip(batch, vectors):
             cid = chunk.get("chunkId", chunk.get("chunk_id"))
@@ -449,3 +450,10 @@ async def seed_chunks() -> None:
         print(f"[seed]   … embedded batch {i // batch_size + 1}")
 
     print("[seed] Chunk seeding complete.")
+    # Ensure indexes for fast metadata lookup
+    try:
+        await textbook_chunks_col.create_index([("associated_lo_codes", pymongo.ASCENDING)])
+        await textbook_chunks_col.create_index([("subdomain_code", pymongo.ASCENDING)])
+        print("[seed] Created indexes on associated_lo_codes and subdomain_code.")
+    except Exception as e:
+        print(f"[seed] Failed to create indexes: {e}")

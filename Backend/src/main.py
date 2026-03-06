@@ -1,6 +1,7 @@
 """EduAssess – AI-Driven Agentic Assessment System (FastAPI entrypoint)."""
 
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.database import create_indexes, ensure_vector_search_index
 from src.routers.answer import router as answer_router
+from src.routers.session import router as session_router
 from src.services.seed import seed_chunks, seed_curriculum
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +65,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(answer_router)
+app.include_router(session_router)
 
 
 # Health check (used by Railway / load balancers)
