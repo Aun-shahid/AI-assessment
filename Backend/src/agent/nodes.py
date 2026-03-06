@@ -21,6 +21,7 @@ from src.agent.prompts import (
 )
 from src.agent.state import AgentState
 from src.config import settings
+from src.services.reranker import rerank_chunks
 from src.services.vector_search import (
     search_chunks_by_lo_codes,
     search_chunks_per_lo,
@@ -560,24 +561,106 @@ async def handle_selection(state: AgentState) -> dict:
             last_user = m.content
             break
 
-    # Build context from previously matched LOs so the LLM can map
-    # positional references ("1, 3, 5") to actual LO codes.
     matched_los = session.get("matched_los", [])
     matched_summary = "\n".join(
         f"{i+1}. [{lo.get('code', '')}] {lo.get('name', '')}"
         for i, lo in enumerate(matched_los)
     )
 
-    # Use LLM to extract selected LO codes from teacher's message
+    # ── Step 0: Detect explicit selection vs vague approval ──
+    # "go ahead", "yes", "ok" are NOT explicit selections — the user
+    # never mentioned numbers, codes, or topic names.
+    explicitness_msgs = [
+        SystemMessage(
+            content=(
+                "Classify whether the teacher's message is an EXPLICIT selection "
+                "of specific Learning Outcomes, or just a VAGUE approval/confirmation.\n\n"
+                "EXPLICIT examples (answer 'explicit'):\n"
+                "- 'I choose 1 and 3'\n"
+                "- '6.5.1.1.1 please'\n"
+                "- 'the first one about cells'\n"
+                "- 'all of them'\n"
+                "- 'just the cell structures one'\n"
+                "- 'numbers 2 and 4'\n\n"
+                "VAGUE examples (answer 'vague'):\n"
+                "- 'go ahead'\n"
+                "- 'ok'\n"
+                "- 'yes'\n"
+                "- 'sounds good'\n"
+                "- 'that makes sense, proceed'\n"
+                "- 'sure'\n"
+                "- 'yeah let's do it'\n\n"
+                "Respond with ONLY one word: 'explicit' or 'vague'."
+            )
+        ),
+        HumanMessage(content=f"Teacher's message: {last_user}"),
+    ]
+    explicitness_resp = await _invoke_llm(
+        explicitness_msgs, tag="selection_explicitness", session=session
+    )
+    is_explicit = explicitness_resp.content.strip().lower().startswith("explicit")
+    _log_node(session, "handle_selection", "explicitness", is_explicit=is_explicit, user_message=last_user[:80])
+
+    # ── Vague approval with existing matched LOs → auto-select all ──
+    if not is_explicit and matched_los:
+        valid_matched = [lo for lo in matched_los if "name" in lo and "code" in lo]
+        if valid_matched:
+            lo_names = ", ".join(lo.get("name", "") for lo in valid_matched)
+            reply = AIMessage(
+                content=(
+                    f"Sure thing! I'll use all the suggested Learning Outcomes "
+                    f"({lo_names}) for your assessment. "
+                    f"Ready for me to pull up the relevant textbook material?"
+                )
+            )
+            session = {
+                **session,
+                "state": "topic_selection",
+                "selected_los": valid_matched,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            return {
+                "messages": [reply],
+                "session": session,
+                "selected_los": valid_matched,
+            }
+
+    # ── Vague approval with NO matched LOs → ask for clarification ──
+    if not is_explicit:
+        _log_node(session, "handle_selection", "vague_no_context", user_message=last_user[:120])
+        reply = AIMessage(
+            content=(
+                "I'd love to proceed, but I need to know which Learning Outcomes "
+                "you'd like to include. Could you pick from the list above "
+                "(e.g., 'number 1', 'both', or mention the topic name)?"
+            )
+        )
+        session = {
+            **session,
+            "state": "domain_reasoning",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return {
+            "messages": [reply],
+            "session": session,
+            "selected_los": [],
+        }
+
+    # ── Explicit selection → extract specific LO codes ──
     extraction_prompt = [
         SystemMessage(
             content=(
                 "Extract the Learning Outcome codes (format: 6.5.X.X.X) "
-                "from the teacher's selection message. The teacher may refer "
-                "to LOs by:\n"
+                "that the teacher EXPLICITLY selected in their message. "
+                "The teacher may refer to LOs by:\n"
                 "- Position numbers (e.g., '1, 3, 5') from the numbered list below\n"
                 "- LO codes directly (e.g., '6.5.3.1.1')\n"
+                "- Topic name references (e.g., 'the cell structures one')\n"
                 "- Phrases like 'all of them' or 'the first three'\n\n"
+                "IMPORTANT: Only extract codes the teacher EXPLICITLY referenced. "
+                "Do NOT include codes just because they appear in the conversation "
+                "history. If the teacher says 'go ahead' or 'ok' without specifying "
+                "which LOs, return an empty array.\n\n"
                 f"Available LOs from previous suggestions:\n{matched_summary}\n\n"
                 "Return ONLY a valid JSON array of LO code strings. "
                 "If 'all' is selected, return all codes from the list above."
@@ -629,11 +712,32 @@ async def handle_selection(state: AgentState) -> dict:
     if not enriched:
         enriched = selected
 
-    # Build a confirmation reply — do NOT retrieve content yet
+    valid_enriched = [e for e in enriched if "name" in e and "code" in e]
+
+    if not valid_enriched:
+        _log_node(session, "handle_selection", "empty_extraction", user_message=last_user[:120])
+        reply = AIMessage(
+            content=(
+                "I didn't quite catch which specific Learning Outcomes you wanted to select. "
+                "Could you please let me know which ones from the list above you'd like to use "
+                "(for example, by saying 'number 1' or 'both')?"
+            )
+        )
+        session = {
+            **session,
+            "state": "domain_reasoning",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return {
+            "messages": [reply],
+            "session": session,
+            "selected_los": [],
+        }
+
     lo_summary = "\n".join(
         f"- **[{e.get('code', 'N/A')}] {e.get('name', e.get('description', ''))}**\n"
         f"  {e.get('description', '')[:200]}"
-        for e in enriched
+        for e in valid_enriched
     )
 
     reply = AIMessage(
@@ -647,11 +751,10 @@ async def handle_selection(state: AgentState) -> dict:
         )
     )
 
-    # Advance to topic_selection — NOT directly to content retrieval
     session = {
         **session,
         "state": "topic_selection",
-        "selected_los": enriched,
+        "selected_los": valid_enriched,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     return {
@@ -686,6 +789,37 @@ async def retrieve_content(state: AgentState) -> dict:
 
     _log_node(session, "retrieve_content", "retrieved", chunk_count=len(chunks), lo_codes=lo_codes)
 
+    # Rerank: filter out off-topic chunks using a small LLM
+    chunks = await rerank_chunks(chunks, selected)
+    _log_node(session, "retrieve_content", "after_rerank", chunk_count=len(chunks))
+
+    if not chunks:
+        lo_labels = ", ".join(
+            f"{lo.get('code', '')} ({lo.get('name', '')})"
+            for lo in selected
+        )
+        reply = AIMessage(
+            content=(
+                f"I could not find any relevant textbook content for the "
+                f"selected Learning Outcomes: {lo_labels}.\n\n"
+                "This likely means the loaded textbook does not cover this "
+                "topic. You can:\n"
+                "- **Go back** and choose different Learning Outcomes\n"
+                "- Ask an administrator to add textbook content for this topic"
+            )
+        )
+        session = {
+            **session,
+            "state": "review_refinement",
+            "retrieved_chunks": [],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return {
+            "messages": [reply],
+            "session": session,
+            "retrieved_chunks": [],
+        }
+
     chunk_summaries = []
     for idx, ch in enumerate(chunks, 1):
         preview = ch.get("content", "")[:300]
@@ -694,11 +828,7 @@ async def retrieve_content(state: AgentState) -> dict:
             f"**Chunk {idx}** (pages {ch.get('page_start')}–{ch.get('page_end')}, "
             f"LOs: {lo_tags}):\n{preview}…"
         )
-    content_text = (
-        "\n\n".join(chunk_summaries)
-        if chunk_summaries
-        else "No relevant content found."
-    )
+    content_text = "\n\n".join(chunk_summaries)
 
     reply = AIMessage(
         content=(

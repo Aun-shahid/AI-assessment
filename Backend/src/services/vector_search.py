@@ -79,7 +79,10 @@ async def search_relevant_chunks(
         lo_doc = await learning_outcomes_col.find_one({"code": lo_code}, projection={"name": 1, "description": 1})
         short_query = lo_code
         if lo_doc:
-            short_query = f"{lo_code} {lo_doc.get('name','')}".strip()
+            # Include description for richer semantic signal
+            name = lo_doc.get('name', '')
+            desc = lo_doc.get('description', '')
+            short_query = f"{name} {desc[:300]}".strip() or lo_code
         # embed LO metadata only
         vec = await embed_text(short_query, source="lo_description")
         # reuse existing vector pipeline via search_chunks (which will embed again if passed a string),
@@ -87,7 +90,7 @@ async def search_relevant_chunks(
         pipeline = [
             {
                 "$vectorSearch": {
-                    "index": "vector_index",
+                    "index": "vector_index_3k",
                     "path": "embedding",
                     "queryVector": vec,
                     "numCandidates": limit * 10,
@@ -114,7 +117,8 @@ async def search_relevant_chunks(
     tasks = [_search_one(code) for code in lo_codes]
     per_lo_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # flatten + dedupe
+    # flatten + dedupe, apply minimum score threshold
+    min_score = RAG_SIMILARITY_THRESHOLD
     seen = set()
     flat = []
     for res in per_lo_results:
@@ -125,6 +129,9 @@ async def search_relevant_chunks(
             continue
         for c in res:
             cid = c.get("chunk_id") or c.get("_id")
+            score = c.get("score", 0)
+            if score < min_score:
+                continue
             if cid and cid not in seen:
                 seen.add(cid)
                 flat.append(c)
@@ -156,7 +163,7 @@ async def search_chunks(query: str, top_k: int = 5) -> list[dict]:
     pipeline = [
         {
             "$vectorSearch": {
-                "index": "vector_index",
+                "index": "vector_index_3k",
                 "path": "embedding",
                 "queryVector": query_vector,
                 "numCandidates": top_k * 10,
@@ -204,7 +211,7 @@ async def search_chunks_filtered(
     pipeline = [
         {
             "$vectorSearch": {
-                "index": "vector_index",
+                "index": "vector_index_3k",
                 "path": "embedding",
                 "queryVector": query_vector,
                 "numCandidates": top_k * 10,
@@ -278,8 +285,9 @@ async def search_chunks_per_lo(
     for lo in selected_los:
         code = lo.get("code", "")
         name = lo.get("name", "")
-        # Short, specific query — NOT the full user chat message
-        query = f"{code} {name}".strip()
+        desc = lo.get("description", "")
+        # Richer query — include description for better semantic matching
+        query = f"{name} {desc[:300]}".strip() or f"{code} {name}".strip()
         if not query:
             continue
 

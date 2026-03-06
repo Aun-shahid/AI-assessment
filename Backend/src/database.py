@@ -49,7 +49,7 @@ async def ensure_vector_search_index() -> None:
     """
     try:
         existing = await textbook_chunks_col.list_search_indexes().to_list()
-        if any(idx.get("name") == "vector_index" for idx in existing):
+        if any(idx.get("name") == "vector_index_3k" for idx in existing):
             return
 
         search_index = SearchIndexModel(
@@ -67,11 +67,11 @@ async def ensure_vector_search_index() -> None:
                     },
                 ]
             },
-            name="vector_index",
+            name="vector_index_3k",
             type="vectorSearch",
         )
         await textbook_chunks_col.create_search_index(model=search_index)
-        print("[db] Atlas Vector Search index 'vector_index' created.")
+        print("[db] Atlas Vector Search index 'vector_index_3k' created.")
     except Exception as exc:
         print(
             f"[db] Could not auto-create vector search index "

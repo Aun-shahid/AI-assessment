@@ -19,8 +19,12 @@ class Settings(BaseSettings):
     # OpenAI
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
-    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
-    EMBEDDING_DIMENSIONS: int = 1536
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-large"
+    EMBEDDING_DIMENSIONS: int = 3072
+
+    # Reranker
+    RERANK_MODEL: str = "gpt-4.1-nano-2025-04-14"
+    RERANK_WITH_LLM: bool = True
 
     # CORS
     FRONTEND_URL: str = "http://localhost:3000"
