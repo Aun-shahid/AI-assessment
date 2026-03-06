@@ -7,15 +7,15 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install Python dependencies
-COPY requirements.txt .
+COPY Backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code and data
-COPY . .
+COPY Backend/ .
 
-# Copy chunks.json into the container (expected at ../docs/chunks.json relative to Backend/)
+# Copy chunks.json into the container (expected at docs/chunks.json relative to repo root)
 # When building from the repo root, the docs/ folder should be available.
-COPY ../docs/chunks.json /app/docs/chunks.json
+COPY docs/chunks.json /app/docs/chunks.json
 
 EXPOSE 8080
 
