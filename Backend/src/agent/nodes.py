@@ -70,20 +70,19 @@ user message, classify the user intent into EXACTLY ONE of these categories:
 - greeting        : pure casual greeting ("hello", "hi") with NO topic or request attached.
 - topic_input     : teacher describes a topic, subject area, or asks to start a new assessment/change topics (e.g. "let's do another one", "different topic", "hello make a quiz on Game of Thrones").
 - info_request    : teacher asks to see more details, a full list of LOs, or more information about specific topics/subdomains (e.g. "show me the LOs for...", "what LOs are in...", "list all...", "show me the full list")
-- selection       : teacher EXPLICITLY selects specific LOs from a list, or explicitly selects a topic/subdomain when asked (e.g. "I choose 1, 3, 5", "lets make a quiz from gravity effects", "I want numbers 2 and 4")
+- selection       : teacher EXPLICITLY selects specific LOs from a list, or explicitly selects a topic/subdomain when asked (e.g. "I choose 1, 3, 5", "its for physical properties", "I want numbers 2 and 4")
 - approval        : teacher approves / is satisfied and wants to proceed to the NEXT step (e.g. "looks good, proceed", "yes, go ahead", "confirmed")
 - rejection       : teacher rejects content or asks for changes (e.g. "too hard", "not relevant", "change this")
 - generate        : teacher explicitly asks to generate the assessment (e.g. "generate", "create the quiz", "make the test")
 - other           : conversational banter, out-of-context remarks, complaints about being robotic, clarification questions, or anything that doesn't fit above (e.g. "are there more options?", "you are a bot", "why did you say that?")
 
 IMPORTANT distinctions:
+- READ the recent conversation history to understand context. If the AI just asked the user to pick an option, their short answer (like "its for physical properties") is a 'selection', not a 'topic_input'.
 - "show me the LOs" or "list the topics" or "what LOs are available" = info_request (NOT selection)
-- "those topics look good, show me more" or "please show me the full list" = info_request (NOT approval)
-- "I choose 6.5.3.1.1 and 6.5.2.2.3" or "I'll take numbers 1, 3, 5" = selection
-- "looks good, generate" or "yes, create the assessment" = approval or generate
-- A message that says topics "look good" BUT ALSO asks to see a list = info_request
-- A meta-request to start over like "make another quiz" = topic_input
-- A purely conversational complaint like "you are a bot" or "do you have more options?" = other
+- "those topics look good, show me more" = info_request (NOT approval)
+- "I choose 6.5.3.1.1" or "I'll take numbers 1, 3, 5" = selection
+- "looks good, generate" = approval or generate
+- A meta-request to start over = topic_input
 
 Respond with ONLY the category name (one word, lowercase).
 """
@@ -164,6 +163,7 @@ async def route_input(state: AgentState) -> dict:
 
     classification_messages = [
         SystemMessage(content=ROUTE_SYSTEM),
+    ] + messages[-4:-1] + [
         HumanMessage(
             content=(
                 f"Current session state: {current_state}\n"
@@ -320,12 +320,12 @@ async def handle_conversational_fallback(state: AgentState) -> dict:
 
     sys_msg = SystemMessage(
         content=(
-            "You are EduAssess, an expert AI assessment assistant. The user has said something conversational, "
-            "unpredictable, or slightly off-script that doesn't immediately advance the workflow. "
-            "Respond intelligently, humanly, and conversationally in a helpful tone. "
-            "Address their remark directly. If it makes sense, gently remind them of where you both are "
-            "in the assessment creation process, but do so naturally. Do NOT output robotic templates or force "
-            "repetitive lists. Be a smart AI."
+            "You are EduAssess, an expert AI assessment assistant focused on creating educational assessments. "
+            "The user has said something off-topic, like an error message, technical issue, or unrelated remark. "
+            "Respond helpfully and address their input directly, but ALWAYS steer the conversation back to your core purpose: "
+            "helping teachers create tailored student assessments aligned to the curriculum. "
+            "Remind them politely of your role and ask what science topic they'd like to assess. "
+            "Be professional, concise, and encouraging. Do not engage deeply in debugging or off-topic discussions."
         )
     )
 
@@ -387,6 +387,7 @@ async def reason_topics(state: AgentState) -> dict:
                 "Respond with ONLY one word: 'specific' or 'broad'."
             )
         ),
+    ] + messages[-4:-1] + [
         HumanMessage(content=f"Teacher's topic: {last_user}"),
     ]
     specificity_resp = await _invoke_llm(specificity_msgs, tag="topic_specificity", session=session)
@@ -593,6 +594,7 @@ async def handle_selection(state: AgentState) -> dict:
                 "Respond with ONLY one word: 'explicit' or 'vague'."
             )
         ),
+    ] + messages[-4:-1] + [
         HumanMessage(content=f"Teacher's message: {last_user}"),
     ]
     explicitness_resp = await _invoke_llm(
@@ -790,7 +792,15 @@ async def retrieve_content(state: AgentState) -> dict:
     _log_node(session, "retrieve_content", "retrieved", chunk_count=len(chunks), lo_codes=lo_codes)
 
     # Rerank: filter out off-topic chunks using a small LLM
-    chunks = await rerank_chunks(chunks, selected)
+    # Extract the teacher's original topic request (first substantive user message)
+    teacher_topic = ""
+    for m in state["messages"]:
+        if isinstance(m, HumanMessage) and len(m.content.strip()) > 40:
+            teacher_topic = m.content.strip()
+            break
+    teacher_topic = teacher_topic or "General assessment on the selected learning outcomes."
+    
+    chunks = await rerank_chunks(chunks, selected, teacher_topic)
     _log_node(session, "retrieve_content", "after_rerank", chunk_count=len(chunks))
 
     if not chunks:
@@ -922,6 +932,20 @@ async def generate_assessment(state: AgentState) -> dict:
         total_chars += len(content)
     textbook_content = "\n\n---\n\n".join(chunk_texts) if chunk_texts else "No textbook content available."
 
+    # Extract the teacher's original topic request (first substantive user message)
+    teacher_topic = ""
+    for m in messages:
+        if isinstance(m, HumanMessage) and len(m.content.strip()) > 40:
+            teacher_topic = m.content.strip()
+            break
+    teacher_topic = teacher_topic or "General assessment on the selected learning outcomes."
+
+    # Build context: anchor with early messages (original request) + recent messages
+    if len(messages) > 6:
+        context_msgs = list(messages[:2]) + list(messages[-4:])
+    else:
+        context_msgs = list(messages)
+
     sys_msg = SystemMessage(
         content=SYSTEM_PROMPT.format(
             curriculum_context=state.get("curriculum_context", "")
@@ -929,21 +953,44 @@ async def generate_assessment(state: AgentState) -> dict:
     )
     gen_prompt = HumanMessage(
         content=ASSESSMENT_GENERATION_PROMPT.format(
+            teacher_topic=teacher_topic,
             selected_los=selected_summary,
             textbook_content=textbook_content,
         )
     )
 
-    response = await _invoke_llm([sys_msg] + list(messages[-4:]) + [gen_prompt], tag="generate_assessment", session=session)
+    response = await _invoke_llm([sys_msg] + context_msgs + [gen_prompt], tag="generate_assessment", session=session)
+
+    # Build a references section with clickable textbook page links
+    BOOK_BASE_URL = "https://online.fliphtml5.com/kadt/huuo/#p="
+    page_numbers: set[int] = set()
+    for ch in chunks:
+        ps = ch.get("page_start")
+        pe = ch.get("page_end")
+        if ps is not None:
+            page_numbers.add(int(ps))
+        if pe is not None:
+            page_numbers.add(int(pe))
+
+    assessment_text = response.content
+    if page_numbers:
+        sorted_pages = sorted(page_numbers)
+        page_links = ", ".join(
+            f"[Page {p}]({BOOK_BASE_URL}{p})" for p in sorted_pages
+        )
+        references_section = (
+            f"\n\n---\n\n📖 **References**\n\n{page_links}"
+        )
+        assessment_text = assessment_text + references_section
 
     session = {
         **session,
         "state": "complete",
-        "generated_assessment": response.content,
+        "generated_assessment": assessment_text,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     return {
-        "messages": [response],
+        "messages": [AIMessage(content=assessment_text)],
         "session": session,
-        "assessment": response.content,
+        "assessment": assessment_text,
     }

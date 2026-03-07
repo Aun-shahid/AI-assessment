@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 _RERANK_SYSTEM = """\
 You are a relevance filter for a Grade 6 science textbook retrieval system.
 
-Given a set of Learning Outcomes (LOs) and a numbered list of textbook chunks,
-decide which chunks are genuinely useful for building a student assessment on
-those LOs.
+Given the teacher's specific topic request, the Learning Outcomes (LOs), and a numbered list of textbook chunks,
+decide which chunks are genuinely useful for building a student assessment on the specific topic.
 
 Rules:
-- KEEP  → chunk directly explains, discusses, or provides examples related to the LOs.
-- DROP  → chunk is about a completely different topic, is mainly administrative
-           instructions, answer keys for unrelated lessons, or image/credit metadata.
+- KEEP → chunk directly explains, discusses, or provides examples related to BOTH the specific topic AND the LOs.
+- DROP → chunk is about a completely different topic, is mainly administrative instructions, answer keys for unrelated lessons, or image/credit metadata.
+- If the topic mentions specific scenarios (like "density in layered liquids"), prioritize chunks that address those exact scenarios.
+- If the topic mentions specific substances or concepts (like "air as pure substance"), prioritize chunks that directly discuss those.
 
 Respond with ONLY a JSON array of decisions, one per chunk, in the SAME order,
 e.g.:  ["KEEP", "DROP", "KEEP"]
@@ -34,7 +34,7 @@ Do not include explanations. Output valid JSON only.
 """
 
 
-async def rerank_chunks(chunks: list[dict], selected_los: list[dict]) -> list[dict]:
+async def rerank_chunks(chunks: list[dict], selected_los: list[dict], user_topic: str = "") -> list[dict]:
     """Filter *chunks* for relevance to *selected_los* using a small LLM.
 
     Parameters
@@ -69,6 +69,7 @@ async def rerank_chunks(chunks: list[dict], selected_los: list[dict]) -> list[di
         {
             "role": "user",
             "content": (
+                f"Teacher's specific topic request: {user_topic}\n\n"
                 f"Learning Outcomes to assess:\n{lo_summary}\n\n"
                 f"Textbook chunks to evaluate:\n{chunk_list}"
             ),

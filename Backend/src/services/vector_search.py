@@ -63,11 +63,21 @@ async def search_relevant_chunks(
         limit,
     )
 
+    # Fields to return — excludes _id, embedding, and other bulky/non-serialisable fields
+    _CHUNK_PROJECTION = {
+        "_id": 0,
+        "chunk_id": 1,
+        "content": 1,
+        "page_start": 1,
+        "page_end": 1,
+        "associated_lo_codes": 1,
+    }
+
     # 1) Metadata lookup
     meta_query: dict = {"associated_lo_codes": {"$in": lo_codes}}
     if subdomain_code:
         meta_query["subdomain_code"] = subdomain_code
-    meta_cursor = textbook_chunks_col.find(meta_query).sort([("page_start", 1)])
+    meta_cursor = textbook_chunks_col.find(meta_query, _CHUNK_PROJECTION).sort([("page_start", 1)])
     meta_results = await meta_cursor.to_list(length=limit)
     if meta_results:
         logger.info("[tool] vector_search.metadata_hit count=%s", len(meta_results))

@@ -34,6 +34,7 @@ Each LO has a unique code (e.g. 6.5.2.1.1) and an enriched description.
 - For Short Answer questions, provide a model answer.
 - Always include metadata (LO code, Domain, Subdomain) with each question.
 - Remember what was said in previous turns — use conversation history.
+- If the conversation drifts off-topic (e.g., discussing unrelated technical issues, personal matters, or non-educational topics), politely steer it back to creating assessments by reminding the user of your role and asking how you can help with their assessment needs.
 
 ## Available Curriculum
 {curriculum_context}
@@ -168,6 +169,9 @@ Do NOT retrieve content or generate questions yet.
 ASSESSMENT_GENERATION_PROMPT = """\
 Generate a student assessment based on the following:
 
+**Teacher's Topic Focus:**
+{teacher_topic}
+
 **Selected Learning Outcomes:**
 {selected_los}
 
@@ -183,6 +187,8 @@ Generate a student assessment based on the following:
 - Format the entire assessment in clean Markdown.
 - Make questions age-appropriate for middle-school students (Grade 6).
 - Questions should test understanding, not just recall.
+- **Critically:** focus question scenarios and wording directly on the teacher's stated topic focus — not generic LO content. For example, if the focus is layered liquids and density, write questions around that scenario.
+- Do NOT include a References or Sources section at the end — this is added automatically.
 
 Begin the assessment with a title and brief instructions for students.
 """

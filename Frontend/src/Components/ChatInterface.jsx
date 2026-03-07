@@ -80,6 +80,22 @@ const STATE_LABELS = {
   complete: "Assessment ready",
 };
 
+/* ── parse the "📖 References" block appended by the backend ── */
+function parseReferences(content) {
+  const marker = "\n\n---\n\n\uD83D\uDCD6 **References**\n\n";
+  const idx = content.indexOf(marker);
+  if (idx === -1) return { body: content, pages: [] };
+  const body = content.slice(0, idx);
+  const refSection = content.slice(idx + marker.length);
+  const pages = [];
+  const re = /\[Page (\d+)\]\((https?:\/\/[^)]+)\)/g;
+  let m;
+  while ((m = re.exec(refSection)) !== null) {
+    pages.push({ num: parseInt(m[1], 10), url: m[2] });
+  }
+  return { body, pages };
+}
+
 const DEFAULT_GREETING = {
   role: "assistant",
   content:
@@ -449,6 +465,7 @@ export default function ChatInterface() {
           >
             {messages.map((msg, i) => {
               const isUser = msg.role === "user";
+              const { body, pages } = isUser ? { body: msg.content, pages: [] } : parseReferences(msg.content);
               return (
                 <Fade in key={i} timeout={400}>
                   <Stack
@@ -497,7 +514,51 @@ export default function ChatInterface() {
                         fontSize: "0.925rem",
                       }}
                     >
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      <ReactMarkdown
+                        components={{
+                          a: ({ href, children }) => (
+                            <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+                          ),
+                        }}
+                      >
+                        {body}
+                      </ReactMarkdown>
+
+                      {/* ── Grok-style references strip ── */}
+                      {pages.length > 0 && (
+                        <Box sx={{ mt: 1.5, pt: 1.5, borderTop: "1px solid", borderColor: "divider" }}>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            fontWeight={600}
+                            sx={{ display: "block", mb: 1 }}
+                          >
+                            📖 References
+                          </Typography>
+                          <Stack direction="row" flexWrap="wrap" gap={0.75}>
+                            {pages.map(({ num, url }) => (
+                              <Chip
+                                key={num}
+                                label={`Page ${num}`}
+                                size="small"
+                                component="a"
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                clickable
+                                sx={{
+                                  fontSize: "0.75rem",
+                                  bgcolor: "rgba(99,102,241,0.08)",
+                                  color: "primary.main",
+                                  border: "1px solid",
+                                  borderColor: "rgba(99,102,241,0.25)",
+                                  "&:hover": { bgcolor: "rgba(99,102,241,0.16)", textDecoration: "none" },
+                                }}
+                              />
+                            ))}
+                          </Stack>
+                        </Box>
+                      )}
                     </Paper>
                   </Stack>
                 </Fade>
