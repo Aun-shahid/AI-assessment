@@ -22,10 +22,11 @@ Given the teacher's specific topic request, the Learning Outcomes (LOs), and a n
 decide which chunks are genuinely useful for building a student assessment on the specific topic.
 
 Rules:
-- KEEP → chunk directly explains, discusses, or provides examples related to BOTH the specific topic AND the LOs.
-- DROP → chunk is about a completely different topic, is mainly administrative instructions, answer keys for unrelated lessons, or image/credit metadata.
+- KEEP → chunk directly explains, discusses, or provides examples related to BOTH the specific topic AND the LOs. Must be substantive educational content suitable for creating assessment questions.
+- DROP → chunk is about a completely different topic, is mainly administrative instructions, answer keys for unrelated lessons, image/credit metadata, or supplementary material not central to the core teaching content.
 - If the topic mentions specific scenarios (like "density in layered liquids"), prioritize chunks that address those exact scenarios.
 - If the topic mentions specific substances or concepts (like "air as pure substance"), prioritize chunks that directly discuss those.
+- Be strict: only keep chunks that provide meaningful, core teaching content for assessment questions, not peripheral or supporting materials.
 
 Respond with ONLY a JSON array of decisions, one per chunk, in the SAME order,
 e.g.:  ["KEEP", "DROP", "KEEP"]

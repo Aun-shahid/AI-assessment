@@ -30,7 +30,7 @@ from src.services.vector_search import (
 llm = ChatOpenAI(
     model=settings.OPENAI_MODEL,
     api_key=settings.OPENAI_API_KEY,
-    temperature=0.3,
+    temperature=0.2,
 )
 logger = logging.getLogger(__name__)
 
