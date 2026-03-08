@@ -15,6 +15,7 @@ from src.agent.nodes import (
     retrieve_content,
     route_input,
     show_lo_list,
+    update_summary,
 )
 from src.agent.state import AgentState
 
@@ -35,6 +36,7 @@ workflow.add_node("handle_selection", handle_selection)
 workflow.add_node("retrieve_content", retrieve_content)
 workflow.add_node("handle_refinement", handle_refinement)
 workflow.add_node("generate_assessment", generate_assessment)
+workflow.add_node("update_summary", update_summary)
 
 # Entry point is always the router
 workflow.set_entry_point("route_input")
@@ -59,6 +61,7 @@ workflow.add_conditional_edges(
         "retrieve_content": "retrieve_content",
         "handle_refinement": "handle_refinement",
         "generate_assessment": "generate_assessment",
+            "update_summary": "update_summary",
     },
 )
 
@@ -75,6 +78,9 @@ for node in [
     "generate_assessment",
 ]:
     workflow.add_edge(node, END)
+
+# When we summarise, return to the router so it can pick the next intent
+workflow.add_edge("update_summary", "route_input")
 
 # Compile
 graph = workflow.compile()

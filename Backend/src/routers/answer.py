@@ -102,6 +102,7 @@ async def answer(req: AnswerRequest) -> AnswerResponse:
     initial_state: AgentState = {
         "messages": lc_messages,
         "session": session.model_dump(mode="json"),
+        "conversation_summary": session.summary or "",
         "curriculum_context": curriculum_ctx,
         "matched_los": session.matched_los,
         "selected_los": session.selected_los,
@@ -138,6 +139,20 @@ async def answer(req: AnswerRequest) -> AnswerResponse:
     session.selected_los = result.get("selected_los", updated_session_dict.get("selected_los", session.selected_los))
     session.retrieved_chunks = result.get("retrieved_chunks", updated_session_dict.get("retrieved_chunks", session.retrieved_chunks))
     session.generated_assessment = updated_session_dict.get("generated_assessment", session.generated_assessment)
+    # Persist any updated conversation summary and its metadata produced by the graph
+    updated_summary = updated_session_dict.get("conversation_summary")
+    if updated_summary is not None:
+        session.summary = updated_summary
+    last_at = updated_session_dict.get("last_summary_at")
+    if last_at:
+        try:
+            session.last_summary_at = datetime.fromisoformat(last_at)
+        except Exception:
+            session.last_summary_at = session.last_summary_at
+    session.last_summary_msg_count = updated_session_dict.get("last_summary_msg_count", session.last_summary_msg_count)
+    # Persist archived messages if the graph returned them
+    if "archived_messages" in updated_session_dict:
+        session.archived_messages = updated_session_dict.get("archived_messages", session.archived_messages)
     session.updated_at = datetime.now(timezone.utc)
 
     # Append agent reply to message history

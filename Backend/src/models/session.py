@@ -46,6 +46,14 @@ class Session(BaseModel):
 
     # Generation phase
     generated_assessment: str | None = None
+    # When the conversation summary was last produced
+    last_summary_at: datetime | None = None
+    # Message count at the time of last summary
+    last_summary_msg_count: int = 0
+    # Optional rolling AI-generated summary of the conversation (short text)
+    summary: str | None = None
+    # Archived older messages removed from the active session history
+    archived_messages: list[Message] = Field(default_factory=list)
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -58,6 +58,30 @@ async def _invoke_llm(prompt_messages: list, *, tag: str, session: dict):
     _log_node(session, tag, "llm_end", preview=preview)
     return response
 
+
+def _build_context(state: AgentState, n_exchanges: int = 6) -> list:
+    """Return the last *n_exchanges* user/assistant pairs as LangChain messages.
+
+    If a rolling conversation summary exists in the state it is prepended as a
+    SystemMessage so every node knows the teacher's overall goal without needing
+    the full unbounded history.  The summary is authoritative — it always comes
+    first so the model anchors on it before reading recent turns.
+    """
+    messages = state["messages"]
+    summary: str = state.get("conversation_summary", "") or ""
+    window = list(messages[-(n_exchanges * 2):])
+    if summary:
+        window = [
+            SystemMessage(
+                content=(
+                    "### Conversation summary — what the teacher wants:\n"
+                    f"{summary}"
+                )
+            )
+        ] + window
+    return window
+
+
 # ---------------------------------------------------------------------------
 # A) Router — decides which handler should run next
 # ---------------------------------------------------------------------------
@@ -154,6 +178,19 @@ async def route_input(state: AgentState) -> dict:
     messages = state["messages"]
     _log_node(session, "route_input", "enter", current_state=current_state)
 
+    # Summarization trigger: if we've accumulated 20 messages since the
+    # last summary, interrupt and request a summary update first.
+    try:
+        msg_count = len(messages)
+        last_count = int(session.get("last_summary_msg_count", 0))
+    except Exception:
+        msg_count = len(messages)
+        last_count = 0
+
+    if msg_count >= last_count + 20:
+        _log_node(session, "route_input", "need_summary", msg_count=msg_count, last_summary_count=last_count)
+        return {**state, "session": {**session, "_next": "update_summary"}}
+
     # Build a small classification prompt
     last_user = ""
     for m in reversed(messages):
@@ -163,7 +200,7 @@ async def route_input(state: AgentState) -> dict:
 
     classification_messages = [
         SystemMessage(content=ROUTE_SYSTEM),
-    ] + messages[-4:-1] + [
+    ] + _build_context(state)[:-1] + [
         HumanMessage(
             content=(
                 f"Current session state: {current_state}\n"
@@ -175,6 +212,21 @@ async def route_input(state: AgentState) -> dict:
     response = await _invoke_llm(classification_messages, tag="route_classifier", session=session)
     intent = response.content.strip().lower().split()[0]
     _log_node(session, "route_input", "classified", intent=intent, user_message=last_user[:120])
+
+    # Quick routing override: if the user explicitly asks to see textbook
+    # chunks or to generate the assessment and we already have LOs (either
+    # explicitly selected or matched from prior reasoning), proceed directly
+    # to content retrieval rather than asking for selection again.
+    if intent in ("info_request", "generate"):
+        sel = session.get("selected_los") or []
+        matched = session.get("matched_los") or []
+        # If selected LOs exist, go straight to retrieval
+        if sel:
+            return {**state, "session": {**session, "_next": "retrieve_content"}}
+        # If none selected but matched LOs exist, auto-select them and retrieve
+        if not sel and matched:
+            updated = {**session, "selected_los": matched, "_next": "retrieve_content"}
+            return {**state, "session": updated}
 
     if intent in ("topic_input", "greeting"):
         in_scope = await _is_in_curriculum_scope(session, current_state, last_user)
@@ -274,7 +326,7 @@ async def handle_greeting(state: AgentState) -> dict:
         )
     )
     greeting_instruction = SystemMessage(content=GREETING_PROMPT)
-    response = await _invoke_llm([sys_msg, greeting_instruction] + list(messages), tag="handle_greeting", session=session)
+    response = await _invoke_llm([sys_msg, greeting_instruction] + _build_context(state), tag="handle_greeting", session=session)
 
     session = {
         **session,
@@ -329,7 +381,7 @@ async def handle_conversational_fallback(state: AgentState) -> dict:
         )
     )
 
-    response = await _invoke_llm([sys_msg] + list(messages), tag="conversational_fallback", session=session)
+    response = await _invoke_llm([sys_msg] + _build_context(state), tag="conversational_fallback", session=session)
 
     # State remains exactly as it was, we just answer conversationally.
     session = {
@@ -387,7 +439,7 @@ async def reason_topics(state: AgentState) -> dict:
                 "Respond with ONLY one word: 'specific' or 'broad'."
             )
         ),
-    ] + messages[-4:-1] + [
+    ] + _build_context(state)[:-1] + [
         HumanMessage(content=f"Teacher's topic: {last_user}"),
     ]
     specificity_resp = await _invoke_llm(specificity_msgs, tag="topic_specificity", session=session)
@@ -406,7 +458,7 @@ async def reason_topics(state: AgentState) -> dict:
             content=TOPIC_NARROWING_PROMPT.format(user_input=last_user)
         )
         response = await _invoke_llm(
-            [sys_msg] + list(messages) + [narrowing_prompt],
+            [sys_msg] + _build_context(state) + [narrowing_prompt],
             tag="topic_narrowing",
             session=session,
         )
@@ -428,7 +480,7 @@ async def reason_topics(state: AgentState) -> dict:
         content=TOPIC_REASONING_PROMPT.format(user_input=last_user)
     )
 
-    response = await _invoke_llm([sys_msg] + list(messages) + [reasoning_prompt], tag="topic_reasoning", session=session)
+    response = await _invoke_llm([sys_msg] + _build_context(state) + [reasoning_prompt], tag="topic_reasoning", session=session)
 
     # Extract matched LO codes from the reasoning response
     extraction_msgs = [
@@ -531,7 +583,7 @@ async def show_lo_list(state: AgentState) -> dict:
         content=SHOW_LO_LIST_PROMPT.format(user_input=last_user)
     )
 
-    response = await _invoke_llm([sys_msg] + list(messages) + [lo_list_prompt], tag="show_lo_list", session=session)
+    response = await _invoke_llm([sys_msg] + _build_context(state) + [lo_list_prompt], tag="show_lo_list", session=session)
 
     # Stay in domain_reasoning — don't advance the state
     session = {
@@ -594,7 +646,7 @@ async def handle_selection(state: AgentState) -> dict:
                 "Respond with ONLY one word: 'explicit' or 'vague'."
             )
         ),
-    ] + messages[-4:-1] + [
+    ] + _build_context(state)[:-1] + [
         HumanMessage(content=f"Teacher's message: {last_user}"),
     ]
     explicitness_resp = await _invoke_llm(
@@ -668,7 +720,7 @@ async def handle_selection(state: AgentState) -> dict:
                 "If 'all' is selected, return all codes from the list above."
             )
         ),
-    ] + list(messages[-4:]) + [
+    ] + _build_context(state) + [
         HumanMessage(content=f"Teacher's selection: {last_user}"),
     ]
 
@@ -892,7 +944,7 @@ async def handle_refinement(state: AgentState) -> dict:
         )
     )
 
-    response = await _invoke_llm([sys_msg] + list(messages) + [refinement], tag="handle_refinement", session=session)
+    response = await _invoke_llm([sys_msg] + _build_context(state) + [refinement], tag="handle_refinement", session=session)
 
     session = {
         **session,
@@ -940,12 +992,6 @@ async def generate_assessment(state: AgentState) -> dict:
             break
     teacher_topic = teacher_topic or "General assessment on the selected learning outcomes."
 
-    # Build context: anchor with early messages (original request) + recent messages
-    if len(messages) > 6:
-        context_msgs = list(messages[:2]) + list(messages[-4:])
-    else:
-        context_msgs = list(messages)
-
     sys_msg = SystemMessage(
         content=SYSTEM_PROMPT.format(
             curriculum_context=state.get("curriculum_context", "")
@@ -959,7 +1005,7 @@ async def generate_assessment(state: AgentState) -> dict:
         )
     )
 
-    response = await _invoke_llm([sys_msg] + context_msgs + [gen_prompt], tag="generate_assessment", session=session)
+    response = await _invoke_llm([sys_msg] + _build_context(state) + [gen_prompt], tag="generate_assessment", session=session)
 
     # Build a references section with clickable textbook page links
     BOOK_BASE_URL = "https://online.fliphtml5.com/kadt/huuo/#p="
@@ -994,3 +1040,74 @@ async def generate_assessment(state: AgentState) -> dict:
         "session": session,
         "assessment": assessment_text,
     }
+
+
+async def update_summary(state: AgentState) -> dict:
+    """Create or refresh the conversational summary and attach metadata.
+
+    This node updates `session.conversation_summary`, `session.last_summary_at`,
+    and `session.last_summary_msg_count`, then returns control to the router
+    (which will re-run `route_input` in the same graph invocation).
+    """
+    session = state["session"]
+    messages = state["messages"]
+    _log_node(session, "update_summary", "enter", message_count=len(messages))
+
+    # Build a short summary prompt emphasising the teacher's goal/intent
+    sys = SystemMessage(
+        content=(
+            "You are a concise summarizer for an educational assessment assistant. "
+            "Produce a short (2-4 sentence) summary that captures what the teacher wants, "
+            "decisions made (selected LOs), and any outstanding questions or next steps. "
+            "Respond with plain text only."
+        )
+    )
+
+    # Use a slightly larger recent window for summarization
+    context_msgs = _build_context(state, n_exchanges=12)
+
+    try:
+        resp = await _invoke_llm([sys] + context_msgs, tag="update_summary", session=session)
+        new_summary = resp.content.strip()
+    except Exception:
+        _log_node(session, "update_summary", "failed")
+        new_summary = session.get("conversation_summary", "")
+
+    # Truncate older messages while archiving them if history is long.
+    # When we've hit 20+ messages, drop the oldest 10 and keep the most recent 10.
+    archived = session.get("archived_messages", []) or []
+    if len(messages) >= 20:
+        remove_count = 10
+        # Archive the serialized session messages (session['messages'])
+        session_msgs_serialized = session.get("messages", [])
+        to_archive = session_msgs_serialized[:remove_count]
+        remaining_serialized = session_msgs_serialized[remove_count:]
+
+        # Update the LangChain `messages` window returned by this node
+        new_messages_window = messages[remove_count:]
+
+        # Update archive and session payload
+        archived = archived + to_archive
+        session = {
+            **session,
+            "messages": remaining_serialized,
+            "archived_messages": archived,
+        }
+        # Also update the state messages so subsequent nodes see the truncated history
+        state["messages"] = new_messages_window
+    else:
+        # No truncation needed
+        session = {**session}
+
+    # Attach summary and metadata
+    session = {
+        **session,
+        "conversation_summary": new_summary,
+        "last_summary_at": datetime.now(timezone.utc).isoformat(),
+        "last_summary_msg_count": len(state.get("messages", [])),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    _log_node(session, "update_summary", "exit")
+    # No user-facing messages — route back to the router to continue handling
+    return {"messages": [], "session": session}

@@ -30,5 +30,8 @@ class AgentState(TypedDict):
     selected_los: list[dict]
     retrieved_chunks: list[dict]
 
+    # Optional rolling AI-generated summary of the conversation (what the teacher wants)
+    conversation_summary: str
+
     # Final assessment markdown
     assessment: str
